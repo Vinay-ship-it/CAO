@@ -1,0 +1,2939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>CPU vs TPU — Architecture Deep Dive</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+/* ═══════════════════════════════════════════════
+   TOKENS
+═══════════════════════════════════════════════ */
+:root {
+  --bg:        #f8f8f6;
+  --surface:   #ffffff;
+  --border:    #e2e2de;
+  --border-md: #c8c8c2;
+  --text:      #1a1a18;
+  --muted:     #6b6b65;
+  --faint:     #a8a8a0;
+
+  --cpu:       #0369a1;   /* blue  */
+  --cpu-light: #e0f2fe;
+  --cpu-mid:   #7dc4e8;
+
+  --tpu:       #b45309;   /* amber */
+  --tpu-light: #fef3c7;
+  --tpu-mid:   #f59e0b;
+
+  --gpu:       #6b21a8;   /* purple for graph */
+
+  --mono: 'IBM Plex Mono', monospace;
+  --sans: 'DM Sans', sans-serif;
+
+  --r: 6px;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 4px 12px rgba(0,0,0,0.05);
+}
+
+/* ═══════════════════════════════════════════════
+   RESET & BASE
+═══════════════════════════════════════════════ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;font-size:16px}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-weight:400;line-height:1.6;-webkit-font-smoothing:antialiased}
+img,canvas,svg{display:block;max-width:100%}
+button{cursor:pointer;font-family:var(--sans)}
+
+/* ═══════════════════════════════════════════════
+   NAV
+═══════════════════════════════════════════════ */
+nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(248,248,246,0.92);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: 0 40px;
+  display: flex;
+  align-items: center;
+  height: 56px;
+  gap: 0;
+}
+
+.nav-logo {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text);
+  margin-right: 40px;
+  white-space: nowrap;
+}
+
+.nav-logo span.c { color: var(--cpu); }
+.nav-logo span.t { color: var(--tpu); }
+
+.nav-links {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.nav-links::-webkit-scrollbar { display: none; }
+
+.nav-links a {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: 4px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.nav-links a:hover { color: var(--text); background: var(--border); }
+
+/* ═══════════════════════════════════════════════
+   HERO
+═══════════════════════════════════════════════ */
+.hero {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 80px 40px 60px;
+}
+
+.hero-tag {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hero-tag::before {
+  content: '';
+  display: inline-block;
+  width: 24px; height: 1px;
+  background: var(--muted);
+}
+
+.hero h1 {
+  font-family: var(--sans);
+  font-size: clamp(2.2rem, 5vw, 3.6rem);
+  font-weight: 300;
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  margin-bottom: 24px;
+}
+
+.hero h1 strong { font-weight: 600; }
+
+.hero-desc {
+  font-size: 1.05rem;
+  color: var(--muted);
+  max-width: 640px;
+  line-height: 1.7;
+}
+
+/* ═══════════════════════════════════════════════
+   SECTION WRAPPER
+═══════════════════════════════════════════════ */
+.section {
+  max-width: 1100px;
+  margin: 0 auto 80px;
+  padding: 0 40px;
+}
+
+.section-header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 32px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.section-num {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--faint);
+  letter-spacing: 0.1em;
+}
+
+.section-title {
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.section-desc {
+  font-size: 0.88rem;
+  color: var(--muted);
+  margin-left: auto;
+  max-width: 340px;
+  text-align: right;
+  line-height: 1.5;
+}
+
+/* ═══════════════════════════════════════════════
+   TAGS & BADGES
+═══════════════════════════════════════════════ */
+.badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 3px;
+}
+
+.badge-cpu { background: var(--cpu-light); color: var(--cpu); }
+.badge-tpu { background: var(--tpu-light); color: var(--tpu); }
+
+/* ═══════════════════════════════════════════════
+   SECTION 1 — ARCHITECTURE OVERVIEW
+═══════════════════════════════════════════════ */
+.arch-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.arch-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 28px;
+  box-shadow: var(--shadow);
+}
+
+.arch-panel-title {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.arch-panel-title .bar {
+  width: 20px; height: 2px;
+  border-radius: 2px;
+}
+
+.cpu-panel .bar { background: var(--cpu); }
+.tpu-panel .bar { background: var(--tpu); }
+.cpu-panel .arch-panel-title { color: var(--cpu); }
+.tpu-panel .arch-panel-title { color: var(--tpu); }
+
+/* Clickable architecture components */
+.arch-component {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: all 0.18s;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+
+.arch-component:hover {
+  border-color: var(--border-md);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+}
+
+.arch-component.active-cpu {
+  border-color: var(--cpu);
+  background: var(--cpu-light);
+}
+
+.arch-component.active-tpu {
+  border-color: var(--tpu);
+  background: var(--tpu-light);
+}
+
+.arch-comp-name {
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.arch-comp-tag {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  color: var(--faint);
+}
+
+.arch-comp-icon {
+  font-size: 0.9rem;
+  margin-right: 10px;
+  flex-shrink: 0;
+}
+
+.arch-comp-left {
+  display: flex;
+  align-items: center;
+}
+
+.arch-popup {
+  display: none;
+  padding: 12px 16px;
+  margin-top: -6px;
+  margin-bottom: 10px;
+  border: 1px solid;
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.arch-popup.show { display: block; }
+
+.cpu-popup { border-color: var(--cpu); background: var(--cpu-light); color: var(--cpu); }
+.tpu-popup { border-color: var(--tpu); background: var(--tpu-light); color: var(--tpu); }
+
+/* CPU visual diagram */
+.cpu-diagram {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.cpu-cores-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.cpu-core-box {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 8px 4px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  color: var(--muted);
+  transition: all 0.3s;
+}
+
+.cpu-core-box.active {
+  border-color: var(--cpu);
+  background: var(--cpu-light);
+  color: var(--cpu);
+  box-shadow: 0 0 0 2px rgba(3,105,161,0.15);
+}
+
+.cpu-cache-bar {
+  height: 22px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  font-weight: 500;
+  margin-bottom: 4px;
+  letter-spacing: 0.06em;
+}
+
+/* TPU systolic mini diagram */
+.tpu-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  margin-top: 16px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.tpu-pe {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: #e5e5e0;
+  border: 1px solid var(--border);
+  transition: all 0.15s;
+  font-family: var(--mono);
+  font-size: 0.42rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+}
+
+.tpu-pe.active-pe {
+  background: var(--tpu-light);
+  border-color: var(--tpu-mid);
+  color: var(--tpu);
+}
+
+/* ═══════════════════════════════════════════════
+   SECTION 2 — MATRIX MULTIPLY
+═══════════════════════════════════════════════ */
+.matmul-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.control-label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.btn-group {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.btn-group button {
+  padding: 6px 16px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  border: none;
+  background: var(--surface);
+  color: var(--muted);
+  transition: all 0.15s;
+  border-right: 1px solid var(--border);
+  font-family: var(--mono);
+}
+
+.btn-group button:last-child { border-right: none; }
+.btn-group button:hover { background: var(--bg); color: var(--text); }
+.btn-group button.active { background: var(--text); color: white; }
+
+.ctrl-btn {
+  padding: 7px 20px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  transition: all 0.15s;
+  font-family: var(--sans);
+}
+
+.ctrl-btn:hover { border-color: var(--text); }
+.ctrl-btn.playing { background: var(--text); color: white; border-color: var(--text); }
+
+.matmul-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.matmul-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 24px;
+  box-shadow: var(--shadow);
+}
+
+.matmul-panel-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 16px;
+  font-family: var(--mono);
+}
+
+.cpu-matmul-title { color: var(--cpu); }
+.tpu-matmul-title { color: var(--tpu); }
+
+.matrix-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.matrix-wrap {
+  display: inline-block;
+}
+
+.matrix-grid {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.cell {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  border-radius: 3px;
+  background: white;
+  border: 1px solid var(--border);
+  transition: all 0.2s;
+  color: var(--muted);
+}
+
+.cell.cell-active-cpu {
+  background: var(--cpu-light);
+  border-color: var(--cpu);
+  color: var(--cpu);
+  font-weight: 600;
+}
+
+.cell.cell-active-tpu {
+  background: var(--tpu-light);
+  border-color: var(--tpu-mid);
+  color: var(--tpu);
+  font-weight: 600;
+}
+
+.cell.cell-done-cpu {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: var(--cpu);
+}
+
+.cell.cell-done-tpu {
+  background: #fde68a;
+  border-color: var(--tpu-mid);
+  color: var(--tpu);
+}
+
+.matrix-op {
+  font-size: 1.2rem;
+  color: var(--muted);
+  font-weight: 300;
+}
+
+.matmul-status {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 12px;
+  min-height: 36px;
+  line-height: 1.5;
+}
+
+.ops-counter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  padding: 4px 10px;
+  border-radius: 3px;
+  margin-top: 8px;
+}
+
+.ops-counter.cpu-counter { background: var(--cpu-light); color: var(--cpu); }
+.ops-counter.tpu-counter { background: var(--tpu-light); color: var(--tpu); }
+
+/* ═══════════════════════════════════════════════
+   FLOYD-WARSHALL SECTION
+═══════════════════════════════════════════════ */
+.fw-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.fw-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+@media(max-width:900px){ .fw-panels { grid-template-columns: 1fr; } }
+
+.fw-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 22px;
+  box-shadow: var(--shadow);
+}
+
+.fw-panel-title {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fw-panel-title .bar { width: 16px; height: 2px; border-radius: 2px; }
+.fw-cpu-title { color: var(--cpu); }
+.fw-tpu-title { color: var(--tpu); }
+.fw-cpu-title .bar { background: var(--cpu); }
+.fw-tpu-title .bar { background: var(--tpu); }
+
+/* Adjacency input grid */
+.fw-input-wrap {
+  margin-bottom: 16px;
+}
+
+.fw-input-label {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  color: var(--faint);
+  margin-bottom: 6px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.fw-grid {
+  display: grid;
+  gap: 3px;
+}
+
+.fw-cell {
+  width: 38px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: white;
+  color: var(--muted);
+  transition: background 0.18s, border-color 0.18s, color 0.18s;
+  position: relative;
+  overflow: hidden;
+}
+
+.fw-cell input {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  text-align: center;
+  color: var(--text);
+  outline: none;
+  padding: 0;
+}
+
+.fw-cell input:focus { background: #f0f8ff; }
+.fw-cell.fw-diag { background: #f5f5f3; }
+.fw-cell.fw-diag input { color: var(--faint); }
+
+/* Result matrix cells - distance */
+.fw-cell.fw-inf   { color: var(--faint); }
+.fw-cell.fw-active-cpu  { background: var(--cpu-light)!important; border-color: var(--cpu)!important; color: var(--cpu)!important; font-weight:700; }
+.fw-cell.fw-active-tpu  { background: var(--tpu-light)!important; border-color: var(--tpu-mid)!important; color: var(--tpu)!important; font-weight:700; }
+.fw-cell.fw-done-cpu    { background: #dbeafe; border-color: #93c5fd; color: var(--cpu); }
+.fw-cell.fw-done-tpu    { background: #fde68a; border-color: var(--tpu-mid); color: #92400e; }
+.fw-cell.fw-improved    { background: #dcfce7; border-color: #86efac; color: #166534; }
+.fw-cell.fw-k-relay-cpu { background: #e0f2fe; border-color: var(--cpu); outline: 2px solid var(--cpu); z-index:1; }
+.fw-cell.fw-k-relay-tpu { background: #fef3c7; border-color: var(--tpu); outline: 2px solid var(--tpu); z-index:1; }
+.fw-cell.fw-pred-set    { background: #f3e8ff; border-color: #c084fc; color: #6b21a8; }
+
+/* matrices side by side within panel */
+.fw-matrices-row {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.fw-matrix-block { flex: 1; min-width: 0; }
+
+.fw-status {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 10px;
+  min-height: 34px;
+  line-height: 1.55;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.fw-k-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 3px;
+  margin-right: 6px;
+}
+.fw-k-cpu { background: var(--cpu-light); color: var(--cpu); }
+.fw-k-tpu { background: var(--tpu-light); color: var(--tpu); }
+
+.fw-legend {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.fw-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.fw-legend-swatch {
+  width: 12px; height: 12px;
+  border-radius: 2px;
+  border: 1px solid var(--border-md);
+  flex-shrink: 0;
+}
+
+/* ═══════════════════════════════════════════════
+   SECTION 3 — PARALLELISM
+═══════════════════════════════════════════════ */
+.parallel-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.parallel-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 24px;
+  box-shadow: var(--shadow);
+}
+
+.parallel-title {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.parallel-subtitle {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+.parallel-canvas-wrap {
+  position: relative;
+  height: 220px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+canvas.parallel-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.parallel-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.parallel-stat-num {
+  font-family: var(--mono);
+  font-size: 1.6rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.parallel-stat-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.cpu-num { color: var(--cpu); }
+.tpu-num { color: var(--tpu); }
+
+/* ═══════════════════════════════════════════════
+   SECTION 4 — DATA FLOW
+═══════════════════════════════════════════════ */
+.dataflow-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.dataflow-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 24px;
+  box-shadow: var(--shadow);
+}
+
+.dataflow-canvas-wrap {
+  position: relative;
+  height: 260px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* ═══════════════════════════════════════════════
+   SECTION 5 — PERFORMANCE GRAPH
+═══════════════════════════════════════════════ */
+.graph-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 32px;
+  box-shadow: var(--shadow);
+}
+
+.graph-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.graph-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.graph-subtitle {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.graph-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.legend-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+}
+
+.chart-wrap {
+  position: relative;
+  height: 320px;
+}
+
+.graph-selector {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.graph-selector button {
+  padding: 6px 14px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  transition: all 0.15s;
+  font-family: var(--sans);
+}
+
+.graph-selector button:hover { border-color: var(--text); color: var(--text); }
+.graph-selector button.active { background: var(--text); color: white; border-color: var(--text); }
+
+/* ═══════════════════════════════════════════════
+   SECTION 6 — WORKLOAD SUITABILITY
+═══════════════════════════════════════════════ */
+.workload-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.workload-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.workload-btn {
+  width: 100%;
+  text-align: left;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  font-family: var(--sans);
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--muted);
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.workload-btn:hover { border-color: var(--border-md); color: var(--text); }
+
+.workload-btn.active {
+  border-color: var(--text);
+  background: var(--text);
+  color: white;
+}
+
+.workload-icon { font-size: 1rem; flex-shrink: 0; }
+
+.workload-result {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 28px;
+  box-shadow: var(--shadow);
+  min-height: 320px;
+}
+
+.workload-result-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-bottom: 20px;
+}
+
+.perf-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.perf-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.perf-bar-label {
+  width: 50px;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.perf-bar-track {
+  flex: 1;
+  height: 24px;
+  background: var(--bg);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+  border: 1px solid var(--border);
+}
+
+.perf-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.6s cubic-bezier(0.4,0,0.2,1);
+  display: flex;
+  align-items: center;
+  padding-left: 8px;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: white;
+  letter-spacing: 0.04em;
+}
+
+.perf-bar-score {
+  width: 50px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-align: right;
+}
+
+.workload-explanation {
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+
+.workload-explanation h4 {
+  font-size: 0.82rem;
+  font-weight: 600;
+  margin-bottom: 10px;
+  font-family: var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.workload-explanation p {
+  font-size: 0.85rem;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.winner-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-family: var(--mono);
+  margin-bottom: 20px;
+}
+
+.winner-cpu { background: var(--cpu-light); color: var(--cpu); }
+.winner-tpu { background: var(--tpu-light); color: var(--tpu); }
+.winner-both { background: #f3f4f6; color: var(--muted); }
+
+/* ═══════════════════════════════════════════════
+   FOOTER
+═══════════════════════════════════════════════ */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 32px 40px;
+  max-width: 1100px;
+  margin: 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  color: var(--faint);
+  font-family: var(--mono);
+}
+
+/* ═══════════════════════════════════════════════
+   RESPONSIVE
+═══════════════════════════════════════════════ */
+@media (max-width: 760px) {
+  nav { padding: 0 16px; }
+  .hero, .section { padding-left: 16px; padding-right: 16px; }
+  .arch-grid, .matmul-panels, .parallel-grid,
+  .dataflow-grid, .workload-layout { grid-template-columns: 1fr; }
+  .section-desc { display: none; }
+  .workload-layout { grid-template-columns: 1fr; }
+  .workload-list { flex-direction: row; flex-wrap: wrap; }
+  .workload-btn { width: auto; }
+}
+
+/* ═══════════════════════════════════════════════
+   TOOLTIP
+═══════════════════════════════════════════════ */
+.tooltip {
+  position: fixed;
+  z-index: 200;
+  background: var(--text);
+  color: white;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  max-width: 220px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  line-height: 1.5;
+}
+
+/* Divider line */
+.section-divider {
+  max-width: 1100px;
+  margin: 0 auto 80px;
+  padding: 0 40px;
+  height: 1px;
+  background: var(--border);
+}
+
+/* Animation utility */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in { animation: fadeIn 0.4s ease forwards; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════
+  NAV
+══════════════════════════════════════════ -->
+<nav>
+  <div class="nav-logo"><span class="c">CPU</span> / <span class="t">TPU</span></div>
+  <div class="nav-links">
+    <a href="#s1">Architecture</a>
+    <a href="#s2">Matrix Multiply</a>
+    <a href="#s2fw">Floyd-Warshall</a>
+    <a href="#s3">Parallelism</a>
+    <a href="#s4">Data Flow</a>
+    <a href="#s5">Performance</a>
+    <a href="#s6">Workloads</a>
+  </div>
+</nav>
+
+<!-- ══════════════════════════════════════════
+  HERO
+══════════════════════════════════════════ -->
+<div class="hero">
+  <div class="hero-tag">Educational Visualization</div>
+  <h1><strong>CPU vs TPU</strong><br>Architecture Deep Dive</h1>
+  <p class="hero-desc">An interactive guide exploring how general-purpose CPUs and Tensor Processing Units handle computation differently — from hardware design to real-world performance.</p>
+  <div style="margin-top:28px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+    <span style="font-family:var(--mono);font-size:0.68rem;font-weight:500;letter-spacing:0.1em;text-transform:uppercase;color:var(--faint);">Made by</span>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <span style="font-family:var(--mono);font-size:0.75rem;font-weight:500;background:var(--cpu-light);color:var(--cpu);padding:4px 12px;border-radius:4px;border:1px solid var(--cpu-mid);">Kandi Jeevitesh Reddy <span style="opacity:0.7">· 24BCE0350</span></span>
+      <span style="font-family:var(--mono);font-size:0.75rem;font-weight:500;background:var(--tpu-light);color:var(--tpu);padding:4px 12px;border-radius:4px;border:1px solid var(--tpu-mid);">Vinay A <span style="opacity:0.7">· 24BCB0131</span></span>
+      <span style="font-family:var(--mono);font-size:0.75rem;font-weight:500;background:#f3e8ff;color:#7c3aed;padding:4px 12px;border-radius:4px;border:1px solid #c4b5fd;">Vikas Bhaskar <span style="opacity:0.7">· 24BCT0149</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+  SECTION 1 — ARCHITECTURE OVERVIEW
+══════════════════════════════════════════ -->
+<section class="section" id="s1">
+  <div class="section-header">
+    <span class="section-num">01</span>
+    <h2 class="section-title">Architecture Overview</h2>
+    <p class="section-desc">Click any component to learn how it works inside each architecture.</p>
+  </div>
+
+  <div class="arch-grid">
+    <!-- CPU -->
+    <div class="arch-panel cpu-panel">
+      <div class="arch-panel-title"><span class="bar"></span> CPU — General Purpose</div>
+
+      <div class="arch-component" onclick="toggleArch(this,'cpu-cores','cpu')">
+        <div class="arch-comp-left">
+          <span class="arch-comp-icon">⬡</span>
+          <span class="arch-comp-name">Processing Cores (×8–32)</span>
+        </div>
+        <span class="arch-comp-tag">click ↓</span>
+      </div>
+      <div class="arch-popup cpu-popup" id="cpu-cores">
+        <strong>Each core is a fully independent processor.</strong> It can run any instruction — arithmetic, branches, memory access, I/O. Cores execute instructions sequentially within a single thread, using out-of-order execution to maximise throughput. With hyperthreading, two threads share one physical core.
+      </div>
+
+      <div class="arch-component" onclick="toggleArch(this,'cpu-cache','cpu')">
+        <div class="arch-comp-left">
+          <span class="arch-comp-icon">◫</span>
+          <span class="arch-comp-name">Cache Hierarchy  L1→L2→L3</span>
+        </div>
+        <span class="arch-comp-tag">click ↓</span>
+      </div>
+      <div class="arch-popup cpu-popup" id="cpu-cache">
+        <strong>Caches sit between cores and RAM.</strong> L1 (32KB, ~4 cycles), L2 (256KB, ~12 cycles), L3 (32MB, ~40 cycles). A cache miss stalls the pipeline until data arrives from RAM (~200 cycles). The entire memory hierarchy exists because RAM is too slow to feed the CPU directly.
+      </div>
+
+      <div class="arch-component" onclick="toggleArch(this,'cpu-pipeline','cpu')">
+        <div class="arch-comp-left">
+          <span class="arch-comp-icon">⇉</span>
+          <span class="arch-comp-name">Instruction Pipeline (20-stage)</span>
+        </div>
+        <span class="arch-comp-tag">click ↓</span>
+      </div>
+      <div class="arch-popup cpu-popup" id="cpu-pipeline">
+        <strong>Instructions flow through Fetch → Decode → Execute → Writeback.</strong> Out-of-order execution lets the CPU re-arrange instructions to avoid stalls. Branch prediction speculatively executes the likely next path — a misprediction flushes the pipeline, costing ~15 cycles.
+      </div>
+
+      <div class="arch-component" onclick="toggleArch(this,'cpu-mem','cpu')">
+        <div class="arch-comp-left">
+          <span class="arch-comp-icon">▦</span>
+          <span class="arch-comp-name">System RAM (DDR5, ~51 GB/s)</span>
+        </div>
+        <span class="arch-comp-tag">click ↓</span>
+      </div>
+      <div class="arch-popup cpu-popup" id="cpu-mem">
+        <strong>Main memory holds all data and instructions.</strong> DDR5 offers ~51 GB/s bandwidth, but with ~70ns latency. For matrix-heavy workloads, RAM bandwidth becomes the bottleneck — the CPU spends more time waiting for data than computing.
+      </div>
+
+      <!-- Live CPU diagram -->
+      <div class="cpu-diagram">
+        <div class="cpu-cores-grid" id="cpu-cores-visual">
+          <!-- Filled by JS -->
+        </div>
+        <div class="cpu-cache-bar" style="background:#dbeafe;color:var(--cpu);font-size:0.6rem">L3 SHARED CACHE — 32 MB</div>
+        <div class="cpu-cache-bar" style="background:#e0e7ff;color:#4338ca;font-size:0.6rem">SYSTEM RAM — DDR5</div>
+      </div>
+    </div>
+
+    <!-- TPU -->
+    <div class="arch-panel tpu-panel">
+      <div class="arch-panel-title"><span class="bar"></span> TPU v5e — Matrix Specialist</div>
+
+      <div class="arch-component" onclick="toggleArch(this,'tpu-mxu','tpu')">
+        <div class="arch-comp-left">
+          <span class="arch-comp-icon">⊞</span>
+          <span class="arch-comp-name">Matrix Multiply Unit (MXU)</span>
+        </div>
+        <span class="arch-comp-tag">click ↓</span>
+      </div>
+      <div class="arch-popup tpu-popup" id="tpu-mxu">
+        <strong>The MXU is a 128×128 systolic array of multiplier-accumulator units.</strong> It performs 128×128 matrix multiply in a single clock pulse. Each multiply-accumulate (MAC) unit does exactly one operation: multiply two numbers and add to a running total. This simplicity is why TPUs are so efficient — no branch logic, no cache management.
+      </div>
+
+      <div class="arch-component" onclick="toggleArch(this,'tpu-systolic','tpu')">
+        <div class="arch-comp-left">
+          <span class="arch-comp-icon">⊡</span>
+          <span class="arch-comp-name">Systolic Array Architecture</span>
+        </div>
+        <span class="arch-comp-tag">click ↓</span>
+      </div>
+      <div class="arch-popup tpu-popup" id="tpu-systolic">
+        <strong>Data flows between PEs like a heartbeat — rhythmically, without a control unit.</strong> Each PE receives input from its top neighbour, multiplies by a stored weight, adds to the accumulator, and passes the result to its bottom neighbour. Weights flow right, activations flow down. Every PE is busy every clock cycle.
+      </div>
+
+      <div class="arch-component" onclick="toggleArch(this,'tpu-hbm','tpu')">
+        <div class="arch-comp-left">
+          <span class="arch-comp-icon">◧</span>
+          <span class="arch-comp-name">High Bandwidth Memory (HBM, ~819 GB/s)</span>
+        </div>
+        <span class="arch-comp-tag">click ↓</span>
+      </div>
+      <div class="arch-popup tpu-popup" id="tpu-hbm">
+        <strong>HBM provides 16× more bandwidth than CPU DDR5.</strong> It uses 3D-stacked DRAM directly bonded to the TPU die — extremely short signal paths give ~819 GB/s bandwidth. Matrix data is fed directly into the systolic array without cache hierarchies.
+      </div>
+
+      <div class="arch-component" onclick="toggleArch(this,'tpu-xla','tpu')">
+        <div class="arch-comp-left">
+          <span class="arch-comp-icon">◈</span>
+          <span class="arch-comp-name">XLA Compiler (Static Graphs)</span>
+        </div>
+        <span class="arch-comp-tag">click ↓</span>
+      </div>
+      <div class="arch-popup tpu-popup" id="tpu-xla">
+        <strong>The XLA (Accelerated Linear Algebra) compiler fuses operations before execution.</strong> Because TPUs can't handle dynamic branches, programs must be compiled into a static computation graph. XLA can fuse a matmul + activation + normalisation into a single kernel with zero overhead between steps.
+      </div>
+
+      <!-- Live TPU systolic mini-grid -->
+      <div class="tpu-mini-grid" id="tpu-pe-grid">
+        <!-- Filled by JS -->
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+  SECTION 2 — MATRIX MULTIPLICATION
+══════════════════════════════════════════ -->
+<section class="section" id="s2">
+  <div class="section-header">
+    <span class="section-num">02</span>
+    <h2 class="section-title">Matrix Multiplication Visualized</h2>
+    <p class="section-desc">Watch how CPU processes one cell at a time vs TPU's parallel wave.</p>
+  </div>
+
+  <div class="matmul-controls">
+    <span class="control-label">Matrix size:</span>
+    <div class="btn-group">
+      <button onclick="setMatSize(2)" id="mat-2">2×2</button>
+      <button onclick="setMatSize(4)" id="mat-4" class="active">4×4</button>
+      <button onclick="setMatSize(6)" id="mat-6">6×6</button>
+    </div>
+    <button class="ctrl-btn" id="matPlayBtn" onclick="toggleMatmul()">▶ Play</button>
+    <button class="ctrl-btn" onclick="resetMatmul()">↺ Reset</button>
+  </div>
+
+  <div class="matmul-panels">
+    <!-- CPU matmul -->
+    <div class="matmul-panel">
+      <div class="matmul-panel-title cpu-matmul-title">CPU — Sequential Loop</div>
+
+      <div class="matrix-display">
+        <div class="matrix-wrap">
+          <div style="font-family:var(--mono);font-size:0.62rem;color:var(--faint);margin-bottom:4px">Matrix A</div>
+          <div class="matrix-grid" id="cpu-mat-a" style="grid-template-columns: repeat(4, 32px)"></div>
+        </div>
+        <span class="matrix-op">×</span>
+        <div class="matrix-wrap">
+          <div style="font-family:var(--mono);font-size:0.62rem;color:var(--faint);margin-bottom:4px">Matrix B</div>
+          <div class="matrix-grid" id="cpu-mat-b" style="grid-template-columns: repeat(4, 32px)"></div>
+        </div>
+        <span class="matrix-op">=</span>
+        <div class="matrix-wrap">
+          <div style="font-family:var(--mono);font-size:0.62rem;color:var(--faint);margin-bottom:4px">Result C</div>
+          <div class="matrix-grid" id="cpu-mat-c" style="grid-template-columns: repeat(4, 32px)"></div>
+        </div>
+      </div>
+
+      <div class="matmul-status">
+        <div id="cpu-mat-status">Press Play to start the simulation.</div>
+        <div class="ops-counter cpu-counter" id="cpu-ops-counter">ops: 0 / 0</div>
+      </div>
+    </div>
+
+    <!-- TPU matmul -->
+    <div class="matmul-panel">
+      <div class="matmul-panel-title tpu-matmul-title">TPU — Systolic Wave</div>
+
+      <div class="matrix-display">
+        <div class="matrix-wrap">
+          <div style="font-family:var(--mono);font-size:0.62rem;color:var(--faint);margin-bottom:4px">Matrix A</div>
+          <div class="matrix-grid" id="tpu-mat-a" style="grid-template-columns: repeat(4, 32px)"></div>
+        </div>
+        <span class="matrix-op">×</span>
+        <div class="matrix-wrap">
+          <div style="font-family:var(--mono);font-size:0.62rem;color:var(--faint);margin-bottom:4px">Matrix B</div>
+          <div class="matrix-grid" id="tpu-mat-b" style="grid-template-columns: repeat(4, 32px)"></div>
+        </div>
+        <span class="matrix-op">=</span>
+        <div class="matrix-wrap">
+          <div style="font-family:var(--mono);font-size:0.62rem;color:var(--faint);margin-bottom:4px">Result C</div>
+          <div class="matrix-grid" id="tpu-mat-c" style="grid-template-columns: repeat(4, 32px)"></div>
+        </div>
+      </div>
+
+      <div class="matmul-status">
+        <div id="tpu-mat-status">Press Play to start the simulation.</div>
+        <div class="ops-counter tpu-counter" id="tpu-ops-counter">ops: 0 / 0</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+  SECTION 2b — FLOYD-WARSHALL
+══════════════════════════════════════════ -->
+<section class="section" id="s2fw">
+  <div class="section-header">
+    <span class="section-num">02b</span>
+    <h2 class="section-title">Floyd-Warshall Shortest Path</h2>
+    <p class="section-desc">CPU iterates one cell at a time. TPU broadcasts the entire row/column update in parallel.</p>
+  </div>
+
+  <!-- Controls -->
+  <div class="fw-controls">
+    <span class="control-label">Graph size:</span>
+    <div class="btn-group">
+      <button onclick="fwSetSize(4)" id="fw-sz-4" class="active">4×4</button>
+      <button onclick="fwSetSize(5)" id="fw-sz-5">5×5</button>
+      <button onclick="fwSetSize(6)" id="fw-sz-6">6×6</button>
+    </div>
+    <button class="ctrl-btn" onclick="fwRandomize()">⚄ Random</button>
+    <button class="ctrl-btn" id="fwPlayBtn" onclick="fwTogglePlay()">▶ Play</button>
+    <button class="ctrl-btn" onclick="fwReset()">↺ Reset</button>
+    <span style="font-family:var(--mono);font-size:0.72rem;color:var(--faint);margin-left:4px">Edit any cell in the adjacency matrix — use ∞ or 0 for no edge</span>
+  </div>
+
+  <div class="fw-panels">
+    <!-- ── CPU Panel ── -->
+    <div class="fw-panel">
+      <div class="fw-panel-title fw-cpu-title"><span class="bar"></span>CPU — Sequential k-loop</div>
+
+      <!-- Adjacency input (shared, shown only in CPU panel, synced to TPU) -->
+      <div class="fw-input-wrap">
+        <div class="fw-input-label">Adjacency Matrix (input — editable)</div>
+        <div class="fw-grid" id="fw-adj-grid" style="grid-template-columns: repeat(4, 38px)"></div>
+      </div>
+
+      <div class="fw-matrices-row">
+        <div class="fw-matrix-block">
+          <div class="fw-input-label">Distance Matrix  d[i][j]</div>
+          <div class="fw-grid" id="fw-cpu-dist" style="grid-template-columns: repeat(4, 38px)"></div>
+        </div>
+        <div class="fw-matrix-block">
+          <div class="fw-input-label">Predecessor Matrix  pred[i][j]</div>
+          <div class="fw-grid" id="fw-cpu-pred" style="grid-template-columns: repeat(4, 38px)"></div>
+        </div>
+      </div>
+
+      <div class="fw-status" id="fw-cpu-status">Press Play to start. CPU processes one (i,j) cell per step.</div>
+
+      <div class="fw-legend">
+        <div class="fw-legend-item"><div class="fw-legend-swatch" style="background:#e0f2fe;border-color:#0369a1"></div>Active cell</div>
+        <div class="fw-legend-item"><div class="fw-legend-swatch" style="background:#dcfce7;border-color:#86efac"></div>Improved (shorter path found)</div>
+        <div class="fw-legend-item"><div class="fw-legend-swatch" style="background:#dbeafe;border-color:#93c5fd"></div>Settled</div>
+        <div class="fw-legend-item"><div class="fw-legend-swatch" style="background:#f3e8ff;border-color:#c084fc"></div>Predecessor updated</div>
+      </div>
+    </div>
+
+    <!-- ── TPU Panel ── -->
+    <div class="fw-panel">
+      <div class="fw-panel-title fw-tpu-title"><span class="bar"></span>TPU — Parallel broadcast per k</div>
+
+      <!-- Adjacency mirror (read-only display) -->
+      <div class="fw-input-wrap">
+        <div class="fw-input-label">Adjacency Matrix (same input)</div>
+        <div class="fw-grid" id="fw-adj-mirror" style="grid-template-columns: repeat(4, 38px)"></div>
+      </div>
+
+      <div class="fw-matrices-row">
+        <div class="fw-matrix-block">
+          <div class="fw-input-label">Distance Matrix  d[i][j]</div>
+          <div class="fw-grid" id="fw-tpu-dist" style="grid-template-columns: repeat(4, 38px)"></div>
+        </div>
+        <div class="fw-matrix-block">
+          <div class="fw-input-label">Predecessor Matrix  pred[i][j]</div>
+          <div class="fw-grid" id="fw-tpu-pred" style="grid-template-columns: repeat(4, 38px)"></div>
+        </div>
+      </div>
+
+      <div class="fw-status" id="fw-tpu-status">Press Play to start. TPU updates ALL (i,j) for a given k simultaneously.</div>
+
+      <div class="fw-legend">
+        <div class="fw-legend-item"><div class="fw-legend-swatch" style="background:#fef3c7;border-color:#f59e0b"></div>Relay node k (entire row+col)</div>
+        <div class="fw-legend-item"><div class="fw-legend-swatch" style="background:#dcfce7;border-color:#86efac"></div>Improved this wave</div>
+        <div class="fw-legend-item"><div class="fw-legend-swatch" style="background:#fde68a;border-color:#f59e0b"></div>Settled</div>
+        <div class="fw-legend-item"><div class="fw-legend-swatch" style="background:#f3e8ff;border-color:#c084fc"></div>Predecessor updated</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+  SECTION 3 — PARALLELISM
+══════════════════════════════════════════ -->
+<section class="section" id="s3">
+  <div class="section-header">
+    <span class="section-num">03</span>
+    <h2 class="section-title">Parallelism Visualizer</h2>
+    <p class="section-desc">Each lit cell = one operation happening right now.</p>
+  </div>
+
+  <div class="parallel-grid">
+    <div class="parallel-panel">
+      <div class="parallel-title" style="color:var(--cpu)">CPU — 8 Simultaneous Ops</div>
+      <div class="parallel-subtitle">8 cores × 1–2 ops each = at most ~16 FP operations per cycle</div>
+      <div class="parallel-canvas-wrap">
+        <canvas id="cpuParallelCanvas"></canvas>
+      </div>
+      <div class="parallel-stat">
+        <span class="parallel-stat-num cpu-num" id="cpu-active-count">8</span>
+        <span class="parallel-stat-label">active processing units</span>
+      </div>
+    </div>
+
+    <div class="parallel-panel">
+      <div class="parallel-title" style="color:var(--tpu)">TPU — 256+ Simultaneous Ops</div>
+      <div class="parallel-subtitle">8×8 PE grid shown — real MXU is 128×128 = 16,384 PEs</div>
+      <div class="parallel-canvas-wrap">
+        <canvas id="tpuParallelCanvas"></canvas>
+      </div>
+      <div class="parallel-stat">
+        <span class="parallel-stat-num tpu-num" id="tpu-active-count">64</span>
+        <span class="parallel-stat-label">active processing elements</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+  SECTION 4 — DATA FLOW
+══════════════════════════════════════════ -->
+<section class="section" id="s4">
+  <div class="section-header">
+    <span class="section-num">04</span>
+    <h2 class="section-title">Data Flow Through the System</h2>
+    <p class="section-desc">Dots represent data packets moving between hardware components.</p>
+  </div>
+
+  <div class="dataflow-grid">
+    <div class="dataflow-panel">
+      <div class="parallel-title" style="color:var(--cpu);margin-bottom:4px">CPU Data Path</div>
+      <div style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">RAM → L3 → L2 → L1 → Core → back</div>
+      <div class="dataflow-canvas-wrap">
+        <canvas id="cpuFlowCanvas"></canvas>
+      </div>
+    </div>
+
+    <div class="dataflow-panel">
+      <div class="parallel-title" style="color:var(--tpu);margin-bottom:4px">TPU Data Path</div>
+      <div style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">HBM → Systolic Array → Output Buffer</div>
+      <div class="dataflow-canvas-wrap">
+        <canvas id="tpuFlowCanvas"></canvas>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+  SECTION 5 — PERFORMANCE GRAPH
+══════════════════════════════════════════ -->
+<section class="section" id="s5">
+  <div class="section-header">
+    <span class="section-num">05</span>
+    <h2 class="section-title">Performance Scaling</h2>
+    <p class="section-desc">Based on Floyd-Warshall benchmark results from local machine.</p>
+  </div>
+
+  <div class="graph-panel">
+    <div class="graph-header">
+      <div>
+        <div class="graph-title">Runtime vs Graph Size</div>
+        <div class="graph-subtitle">Floyd-Warshall shortest path · Intel i9 14th Gen · RTX 4070 · TPU v5e-1</div>
+      </div>
+      <div class="graph-legend">
+        <div class="legend-item"><div class="legend-dot" style="background:var(--cpu)"></div> CPU (NumPy)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--gpu)"></div> GPU (PyTorch)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--tpu)"></div> TPU (JAX)</div>
+      </div>
+    </div>
+
+    <div class="graph-selector">
+      <button class="active" onclick="setGraphType('time',this)">Execution Time</button>
+      <button onclick="setGraphType('speedup',this)">Speedup vs CPU</button>
+      <button onclick="setGraphType('log',this)">Log Scale</button>
+    </div>
+
+    <div class="chart-wrap">
+      <canvas id="perfChart"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+  SECTION 6 — WORKLOAD SUITABILITY
+══════════════════════════════════════════ -->
+<section class="section" id="s6">
+  <div class="section-header">
+    <span class="section-num">06</span>
+    <h2 class="section-title">Workload Suitability</h2>
+    <p class="section-desc">Select an algorithm to see which architecture excels and why.</p>
+  </div>
+
+  <div class="workload-layout">
+    <div class="workload-list">
+      <button class="workload-btn active" onclick="setWorkload('matmul',this)">
+        <span class="workload-icon">⊞</span> Matrix Multiplication
+      </button>
+      <button class="workload-btn" onclick="setWorkload('neural',this)">
+        <span class="workload-icon">◎</span> Neural Network Inference
+      </button>
+      <button class="workload-btn" onclick="setWorkload('graph',this)">
+        <span class="workload-icon">◉</span> Graph Algorithms
+      </button>
+      <button class="workload-btn" onclick="setWorkload('branch',this)">
+        <span class="workload-icon">⑂</span> Branch-Heavy Programs
+      </button>
+      <button class="workload-btn" onclick="setWorkload('sort',this)">
+        <span class="workload-icon">⇅</span> Sorting Algorithms
+      </button>
+      <button class="workload-btn" onclick="setWorkload('conv',this)">
+        <span class="workload-icon">⊟</span> Convolution (CNN)
+      </button>
+    </div>
+
+    <div class="workload-result" id="workload-result">
+      <!-- Filled by JS -->
+    </div>
+  </div>
+</section>
+
+<footer>
+  <span>CPU vs TPU — Architecture Visualizer</span>
+  <span style="text-align:right;line-height:1.8;">
+    Kandi Jeevitesh Reddy (24BCE0350) · Vinay A (24BCB0131) · Vikas Bhaskar (24BCT0149)<br>
+    Educational Use · Vanilla JS · Chart.js
+  </span>
+</footer>
+
+<div class="tooltip" id="tooltip"></div>
+
+<!-- ══════════════════════════════════════════
+  JAVASCRIPT
+══════════════════════════════════════════ -->
+<script>
+'use strict';
+
+/* ═══════════════════════════════════════════
+   FLOYD-WARSHALL SECTION
+═══════════════════════════════════════════ */
+const FW_INF = 9999;
+let fwN       = 4;
+let fwAdj     = [];
+let fwCpuDist = [], fwCpuPred = [];
+let fwTpuDist = [], fwTpuPred = [];
+let fwPlaying = false, fwTimer = null;
+// CPU walks cell-by-cell: flat index across k*N*N + i*N + j
+let fwCpuStep = 0;   // 0 .. N^3-1
+let fwTpuK    = 0;   // 0 .. N-1
+let fwCpuDone = false, fwTpuDone = false;
+let fwCpuPrevK = -1; // track when k changes so we can settle old relay row
+
+const FW_DEFAULTS = {
+  4: [
+    [0,3,FW_INF,7],
+    [8,0,2,FW_INF],
+    [5,FW_INF,0,1],
+    [2,FW_INF,FW_INF,0],
+  ],
+  5: [
+    [0,10,FW_INF,5,FW_INF],
+    [FW_INF,0,1,2,FW_INF],
+    [FW_INF,FW_INF,0,FW_INF,4],
+    [FW_INF,3,9,0,2],
+    [7,FW_INF,6,FW_INF,0],
+  ],
+  6: [
+    [0,7,FW_INF,FW_INF,FW_INF,14],
+    [7,0,9,FW_INF,FW_INF,FW_INF],
+    [FW_INF,9,0,10,FW_INF,2],
+    [FW_INF,FW_INF,10,0,11,FW_INF],
+    [FW_INF,FW_INF,FW_INF,11,0,9],
+    [14,FW_INF,2,FW_INF,9,0],
+  ],
+};
+
+function fwCopy(m){ return m.map(r=>[...r]); }
+function fwFmt(v){ return v>=FW_INF ? '∞' : String(Math.round(v*10)/10); }
+function fwColW(n){ return n<=4?38:n<=5?34:30; }
+function fwColsStyle(n){ return `repeat(${n},${fwColW(n)}px)`; }
+
+// ── Build adjacency input grid ────────────────────────────────────────────────
+function fwBuildAdjGrid() {
+  const grid   = document.getElementById('fw-adj-grid');
+  const mirror = document.getElementById('fw-adj-mirror');
+  grid.style.gridTemplateColumns = mirror.style.gridTemplateColumns = fwColsStyle(fwN);
+  grid.innerHTML = mirror.innerHTML = '';
+
+  for (let i=0;i<fwN;i++) for (let j=0;j<fwN;j++) {
+    // editable input cell
+    const cell = document.createElement('div');
+    cell.className = 'fw-cell' + (i===j?' fw-diag':'');
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.readOnly = (i===j);
+    inp.value = i===j ? '0' : (fwAdj[i][j]>=FW_INF ? '∞' : fwAdj[i][j]);
+    inp.addEventListener('blur', () => {
+      if (i===j) return;
+      const raw = inp.value.trim();
+      let v = (raw===''||raw==='∞'||raw.toLowerCase()==='inf') ? FW_INF : parseFloat(raw);
+      if (isNaN(v)||v<=0) v = FW_INF;
+      fwAdj[i][j] = v;
+      inp.value = v>=FW_INF ? '∞' : v;
+      fwSyncMirror();
+      fwResetState();
+      fwRenderAll();
+    });
+    cell.appendChild(inp);
+    grid.appendChild(cell);
+
+    // mirror (read-only, TPU panel)
+    const mc = document.createElement('div');
+    mc.className = 'fw-cell' + (i===j?' fw-diag':'');
+    mc.id = `fw-mirror-${i}-${j}`;
+    mc.textContent = inp.value;
+    mirror.appendChild(mc);
+  }
+}
+
+function fwSyncMirror() {
+  for (let i=0;i<fwN;i++) for (let j=0;j<fwN;j++) {
+    const m = document.getElementById(`fw-mirror-${i}-${j}`);
+    if (m) m.textContent = i===j ? '0' : (fwAdj[i][j]>=FW_INF?'∞':fwAdj[i][j]);
+  }
+}
+
+// ── Build result grids ────────────────────────────────────────────────────────
+function fwBuildResultGrid(id) {
+  const el = document.getElementById(id);
+  el.style.gridTemplateColumns = fwColsStyle(fwN);
+  el.innerHTML = '';
+  for (let i=0;i<fwN;i++) for (let j=0;j<fwN;j++) {
+    const c = document.createElement('div');
+    c.className = 'fw-cell';
+    c.id = `${id}-${i}-${j}`;
+    el.appendChild(c);
+  }
+}
+
+// ── Init dist/pred from adjacency ────────────────────────────────────────────
+function fwInitMatrices() {
+  const n = fwN;
+  fwCpuDist = fwCopy(fwAdj);
+  fwTpuDist = fwCopy(fwAdj);
+  const mkPred = () => Array.from({length:n},(_,i)=>
+    Array.from({length:n},(_,j)=> i===j ? i : fwAdj[i][j]<FW_INF ? j : -1)
+  );
+  fwCpuPred = mkPred();
+  fwTpuPred = mkPred();
+}
+
+// ── Render dist/pred grids fully ─────────────────────────────────────────────
+function fwRenderDist(prefix, mat) {
+  for (let i=0;i<fwN;i++) for (let j=0;j<fwN;j++) {
+    const el = document.getElementById(`${prefix}-${i}-${j}`);
+    if (!el) continue;
+    const v = mat[i][j];
+    el.className = 'fw-cell' + (v>=FW_INF?' fw-inf':'');
+    el.textContent = fwFmt(v);
+  }
+}
+
+function fwRenderPred(prefix, pred) {
+  for (let i=0;i<fwN;i++) for (let j=0;j<fwN;j++) {
+    const el = document.getElementById(`${prefix}-${i}-${j}`);
+    if (!el) continue;
+    const v = pred[i][j];
+    el.className = 'fw-cell' + (v<0?' fw-inf':'');
+    el.textContent = v<0 ? '—' : String(v);
+  }
+}
+
+function fwRenderAll() {
+  fwRenderDist('fw-cpu-dist', fwCpuDist);
+  fwRenderPred('fw-cpu-pred', fwCpuPred);
+  fwRenderDist('fw-tpu-dist', fwTpuDist);
+  fwRenderPred('fw-tpu-pred', fwTpuPred);
+}
+
+// ── Reset just the animation state (keep adj grid intact) ────────────────────
+function fwResetState() {
+  fwCpuStep=0; fwTpuK=0;
+  fwCpuDone=false; fwTpuDone=false;
+  fwCpuPrevK=-1;
+  fwInitMatrices();
+}
+
+// ── Full build (new size / randomize / reset) ─────────────────────────────────
+function fwBuild() {
+  fwStop();
+  fwResetState();
+  fwBuildAdjGrid();
+  fwBuildResultGrid('fw-cpu-dist');
+  fwBuildResultGrid('fw-cpu-pred');
+  fwBuildResultGrid('fw-tpu-dist');
+  fwBuildResultGrid('fw-tpu-pred');
+  fwRenderAll();
+  document.getElementById('fw-cpu-status').innerHTML =
+    'Press <strong>Play</strong> to start. CPU evaluates one cell (i,j) per step for each relay node k.';
+  document.getElementById('fw-tpu-status').innerHTML =
+    'Press <strong>Play</strong> to start. TPU evaluates ALL cells in parallel for each relay node k.';
+  const btn = document.getElementById('fwPlayBtn');
+  btn.textContent='▶ Play'; btn.classList.remove('playing');
+}
+
+function fwSetSize(n) {
+  fwN=n;
+  document.querySelectorAll('[id^="fw-sz-"]').forEach(b=>b.classList.remove('active'));
+  document.getElementById(`fw-sz-${n}`).classList.add('active');
+  fwAdj = fwCopy(FW_DEFAULTS[n]||FW_DEFAULTS[4]);
+  fwBuild();
+}
+
+function fwRandomize() {
+  fwAdj = Array.from({length:fwN},(_,i)=>
+    Array.from({length:fwN},(_,j)=>
+      i===j ? 0 : (Math.random()<0.5 ? Math.floor(Math.random()*18)+1 : FW_INF)
+    )
+  );
+  fwBuild();
+}
+
+function fwReset() { fwBuild(); }
+function fwStop() {
+  fwPlaying=false;
+  clearInterval(fwTimer);
+  fwTimer=null;
+}
+
+function fwTogglePlay() {
+  if (fwPlaying) {
+    fwStop();
+    const btn=document.getElementById('fwPlayBtn');
+    btn.textContent='▶ Play'; btn.classList.remove('playing');
+  } else {
+    if (fwCpuDone && fwTpuDone) fwBuild();
+    fwPlaying=true;
+    const btn=document.getElementById('fwPlayBtn');
+    btn.textContent='⏸ Pause'; btn.classList.add('playing');
+    fwTick();
+    fwTimer=setInterval(fwTick, 480);
+  }
+}
+
+// ── Settle a relay row/col (turn fw-improved → fw-done-cpu when k advances) ──
+function fwSettleOldRelayCpu(oldK) {
+  if (oldK<0) return;
+  const n=fwN;
+  for (let x=0;x<n;x++) {
+    ['fw-cpu-dist','fw-cpu-pred'].forEach(prefix=>{
+      const el=document.getElementById(`${prefix}-${oldK}-${x}`);
+      if (el) { el.classList.remove('fw-k-relay-cpu','fw-improved','fw-active-cpu'); el.classList.add('fw-done-cpu'); }
+      const el2=document.getElementById(`${prefix}-${x}-${oldK}`);
+      if (el2) { el2.classList.remove('fw-k-relay-cpu','fw-improved','fw-active-cpu'); el2.classList.add('fw-done-cpu'); }
+    });
+  }
+}
+
+// ── Main tick ─────────────────────────────────────────────────────────────────
+function fwTick() {
+  const n=fwN;
+
+  /* ── CPU: one (i,j) cell ─────────────────────────────────────────────────── */
+  if (!fwCpuDone) {
+    const totalSteps = n*n*n;
+    if (fwCpuStep >= totalSteps) { fwCpuDone=true; goto_cpu_done(); }
+    else {
+      const k = Math.floor(fwCpuStep/(n*n));
+      const rem = fwCpuStep%(n*n);
+      const i = Math.floor(rem/n);
+      const j = rem%n;
+
+      // When k advances, settle previous relay row/col
+      if (k !== fwCpuPrevK) {
+        fwSettleOldRelayCpu(fwCpuPrevK);
+        // Highlight new relay row & col
+        for (let x=0;x<n;x++) {
+          setCls(`fw-cpu-dist-${k}-${x}`, 'fw-k-relay-cpu');
+          setCls(`fw-cpu-dist-${x}-${k}`, 'fw-k-relay-cpu');
+        }
+        fwCpuPrevK=k;
+      }
+
+      // Skip diagonal (i===j) and self-relay (i===k && j===k treated normally)
+      const through = fwCpuDist[i][k] + fwCpuDist[k][j];
+      const current = fwCpuDist[i][j];
+
+      // Clear previous active cell (only if not relay or improved)
+      // (we just highlight the current cell)
+      const dcEl = document.getElementById(`fw-cpu-dist-${i}-${j}`);
+      const pcEl = document.getElementById(`fw-cpu-pred-${i}-${j}`);
+
+      if (through < current - 1e-9) {
+        fwCpuDist[i][j]=through;
+        fwCpuPred[i][j]=fwCpuPred[i][k];
+        if (dcEl) { dcEl.className='fw-cell fw-improved'; dcEl.textContent=fwFmt(through); }
+        if (pcEl) { pcEl.className='fw-cell fw-pred-set'; pcEl.textContent=String(fwCpuPred[i][j]); }
+        document.getElementById('fw-cpu-status').innerHTML=
+          `<span class="fw-k-badge fw-k-cpu">k=${k}</span>`+
+          `d[${i}][${j}]: ${fwFmt(current)} → <strong>${fwFmt(through)}</strong> `+
+          `via node ${k} &nbsp;·&nbsp; pred[${i}][${j}] = ${fwCpuPred[i][j]}`;
+      } else {
+        if (dcEl && !dcEl.classList.contains('fw-improved') && !dcEl.classList.contains('fw-k-relay-cpu')) {
+          dcEl.className='fw-cell fw-active-cpu';
+          dcEl.textContent=fwFmt(current);
+        }
+        document.getElementById('fw-cpu-status').innerHTML=
+          `<span class="fw-k-badge fw-k-cpu">k=${k}</span>`+
+          `d[${i}][${j}] = ${fwFmt(current)} — no improvement via node ${k}`;
+      }
+
+      fwCpuStep++;
+      if (fwCpuStep>=totalSteps) { fwCpuDone=true; goto_cpu_done(); }
+    }
+  }
+
+  function goto_cpu_done() {
+    // Final full render
+    fwRenderDist('fw-cpu-dist', fwCpuDist);
+    fwRenderPred('fw-cpu-pred', fwCpuPred);
+    for (let ii=0;ii<n;ii++) for (let jj=0;jj<n;jj++) {
+      const el=document.getElementById(`fw-cpu-dist-${ii}-${jj}`);
+      if (el) el.classList.add('fw-done-cpu');
+      const pe=document.getElementById(`fw-cpu-pred-${ii}-${jj}`);
+      if (pe) pe.classList.add('fw-done-cpu');
+    }
+    document.getElementById('fw-cpu-status').innerHTML=
+      `<span class="fw-k-badge fw-k-cpu">✓ Done</span>`+
+      `${n}³ = ${n*n*n} cells evaluated sequentially. Distance & predecessor matrices complete.`;
+  }
+
+  /* ── TPU: one full k (all i,j at once) ──────────────────────────────────── */
+  if (!fwTpuDone) {
+    const k=fwTpuK;
+
+    // Settle previous k
+    if (k>0) {
+      const pk=k-1;
+      for (let x=0;x<n;x++) {
+        ['fw-tpu-dist','fw-tpu-pred'].forEach(prefix=>{
+          const el=document.getElementById(`${prefix}-${pk}-${x}`);
+          if (el) { el.classList.remove('fw-k-relay-tpu','fw-improved','fw-pred-set'); el.classList.add('fw-done-tpu'); }
+          const el2=document.getElementById(`${prefix}-${x}-${pk}`);
+          if (el2) { el2.classList.remove('fw-k-relay-tpu','fw-improved','fw-pred-set'); el2.classList.add('fw-done-tpu'); }
+        });
+      }
+    }
+
+    // Highlight new relay row & col
+    for (let x=0;x<n;x++) {
+      setCls(`fw-tpu-dist-${k}-${x}`, 'fw-k-relay-tpu');
+      setCls(`fw-tpu-dist-${x}-${k}`, 'fw-k-relay-tpu');
+    }
+
+    // Update ALL (i,j) simultaneously
+    const improved=[];
+    for (let i=0;i<n;i++) for (let j=0;j<n;j++) {
+      const t=fwTpuDist[i][k]+fwTpuDist[k][j];
+      if (t<fwTpuDist[i][j]-1e-9) {
+        fwTpuDist[i][j]=t;
+        fwTpuPred[i][j]=fwTpuPred[i][k];
+        improved.push([i,j]);
+      }
+    }
+
+    // Render non-relay, non-done cells
+    for (let i=0;i<n;i++) for (let j=0;j<n;j++) {
+      if (i===k||j===k) continue; // relay already highlighted
+      const wasImproved=improved.some(([ii,jj])=>ii===i&&jj===j);
+      const dc=document.getElementById(`fw-tpu-dist-${i}-${j}`);
+      const pc=document.getElementById(`fw-tpu-pred-${i}-${j}`);
+      if (dc) {
+        if (wasImproved) { dc.className='fw-cell fw-improved'; }
+        else if (!dc.classList.contains('fw-done-tpu')) { dc.className='fw-cell'; }
+        dc.textContent=fwFmt(fwTpuDist[i][j]);
+      }
+      if (pc) {
+        if (wasImproved) { pc.className='fw-cell fw-pred-set'; }
+        else if (!pc.classList.contains('fw-done-tpu')) { pc.className='fw-cell'; }
+        const v=fwTpuPred[i][j];
+        pc.textContent=v<0?'—':String(v);
+      }
+    }
+    // Update relay row/col text
+    for (let x=0;x<n;x++) {
+      const dc=document.getElementById(`fw-tpu-dist-${k}-${x}`);
+      if (dc) dc.textContent=fwFmt(fwTpuDist[k][x]);
+      const dc2=document.getElementById(`fw-tpu-dist-${x}-${k}`);
+      if (dc2) dc2.textContent=fwFmt(fwTpuDist[x][k]);
+    }
+
+    document.getElementById('fw-tpu-status').innerHTML=
+      `<span class="fw-k-badge fw-k-tpu">k=${k}</span>`+
+      `All ${n}×${n} = <strong>${n*n}</strong> cells evaluated in parallel &nbsp;·&nbsp; `+
+      `<strong>${improved.length}</strong> path(s) improved`;
+
+    fwTpuK++;
+    if (fwTpuK>=n) {
+      fwTpuDone=true;
+      // Final full render
+      fwRenderDist('fw-tpu-dist', fwTpuDist);
+      fwRenderPred('fw-tpu-pred', fwTpuPred);
+      for (let ii=0;ii<n;ii++) for (let jj=0;jj<n;jj++) {
+        const el=document.getElementById(`fw-tpu-dist-${ii}-${jj}`);
+        if (el) el.classList.add('fw-done-tpu');
+        const pe=document.getElementById(`fw-tpu-pred-${ii}-${jj}`);
+        if (pe) pe.classList.add('fw-done-tpu');
+      }
+      document.getElementById('fw-tpu-status').innerHTML=
+        `<span class="fw-k-badge fw-k-tpu">✓ Done</span>`+
+        `${n} waves (one per k). Each processed all ${n*n} cells in parallel. Complete.`;
+    }
+  }
+
+  // Stop when both done
+  if (fwCpuDone && fwTpuDone) {
+    fwStop();
+    const btn=document.getElementById('fwPlayBtn');
+    btn.textContent='▶ Play'; btn.classList.remove('playing');
+  }
+}
+
+function setCls(id, cls) {
+  const el=document.getElementById(id);
+  if (el) el.className=`fw-cell ${cls}`;
+}
+
+
+// Toggle architecture component popups
+function toggleArch(el, popupId, type) {
+  const popup = document.getElementById(popupId);
+  const isOpen = popup.classList.contains('show');
+
+  // Close all popups in this panel
+  const panel = el.closest('.arch-panel');
+  panel.querySelectorAll('.arch-popup').forEach(p => p.classList.remove('show'));
+  panel.querySelectorAll('.arch-component').forEach(c => {
+    c.classList.remove('active-cpu','active-tpu');
+  });
+
+  if (!isOpen) {
+    popup.classList.add('show');
+    el.classList.add(type === 'cpu' ? 'active-cpu' : 'active-tpu');
+  }
+}
+
+// Build CPU core visual
+function buildCpuVisual() {
+  const wrap = document.getElementById('cpu-cores-visual');
+  wrap.innerHTML = '';
+  for (let i = 0; i < 8; i++) {
+    const box = document.createElement('div');
+    box.className = 'cpu-core-box';
+    box.id = `cpu-core-${i}`;
+    box.innerHTML = `C${i}<br><span style="font-size:0.5rem;opacity:0.7">×2 HT</span>`;
+    wrap.appendChild(box);
+  }
+}
+
+// Animate CPU cores pulsing
+function animateCpuCores() {
+  let coreIdx = 0;
+  let prev = [];
+
+  setInterval(() => {
+    prev.forEach(i => {
+      const el = document.getElementById(`cpu-core-${i}`);
+      if (el) el.classList.remove('active');
+    });
+    prev = [];
+
+    // Activate 1–2 random cores (simulating sequential work)
+    const n = Math.floor(Math.random() * 2) + 1;
+    for (let i = 0; i < n; i++) {
+      const idx = Math.floor(Math.random() * 8);
+      const el = document.getElementById(`cpu-core-${idx}`);
+      if (el) { el.classList.add('active'); prev.push(idx); }
+    }
+  }, 600);
+}
+
+// Build TPU PE mini-grid
+function buildTpuGrid() {
+  const wrap = document.getElementById('tpu-pe-grid');
+  wrap.innerHTML = '';
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const pe = document.createElement('div');
+      pe.className = 'tpu-pe';
+      pe.id = `pe-${r}-${c}`;
+      pe.textContent = `${r}${c}`;
+      wrap.appendChild(pe);
+    }
+  }
+}
+
+// Animate TPU systolic wave
+function animateTpuWave() {
+  let diag = 0;
+  setInterval(() => {
+    // Clear all
+    document.querySelectorAll('.tpu-pe').forEach(p => p.classList.remove('active-pe'));
+    // Activate current anti-diagonal
+    for (let r = 0; r < 8; r++) {
+      const c = diag - r;
+      if (c >= 0 && c < 8) {
+        const pe = document.getElementById(`pe-${r}-${c}`);
+        if (pe) pe.classList.add('active-pe');
+      }
+    }
+    diag = (diag + 1) % 15;
+  }, 120);
+}
+
+/* ═══════════════════════════════════════════
+   SECTION 2 — MATRIX MULTIPLY
+═══════════════════════════════════════════ */
+
+let matSize    = 4;
+let matPlaying = false;
+let matTimer   = null;
+let cpuStep    = 0;
+let tpuDiag    = 0;
+let tpuStep    = 0;
+let matA, matB;
+
+function randomMatrix(n) {
+  return Array.from({length:n}, () =>
+    Array.from({length:n}, () => Math.floor(Math.random()*9)+1)
+  );
+}
+
+function setMatSize(n) {
+  matSize = n;
+  document.querySelectorAll('.btn-group button').forEach(b => b.classList.remove('active'));
+  document.getElementById(`mat-${n}`).classList.add('active');
+  resetMatmul();
+}
+
+function buildMatrixGrid(id, n, cls) {
+  const el = document.getElementById(id);
+  el.style.gridTemplateColumns = `repeat(${n}, ${n <= 4 ? 32 : n <= 6 ? 26 : 22}px)`;
+  el.innerHTML = '';
+  for (let i = 0; i < n * n; i++) {
+    const cell = document.createElement('div');
+    cell.className = `cell ${cls}-${Math.floor(i/n)}-${i%n}`;
+    cell.id = `${id}-${Math.floor(i/n)}-${i%n}`;
+    el.appendChild(cell);
+  }
+}
+
+function populateMatrix(prefix, mat) {
+  const n = mat.length;
+  for (let r = 0; r < n; r++)
+    for (let c = 0; c < n; c++) {
+      const el = document.getElementById(`${prefix}-${r}-${c}`);
+      if (el) el.textContent = mat[r][c];
+    }
+}
+
+function clearMatHighlight(prefix, n) {
+  for (let r = 0; r < n; r++)
+    for (let c = 0; c < n; c++) {
+      ['cpu-mat-a','cpu-mat-b','tpu-mat-a','tpu-mat-b','cpu-mat-c','tpu-mat-c'].forEach(id => {
+        const el = document.getElementById(`${id}-${r}-${c}`);
+        if (el) el.className = 'cell';
+      });
+    }
+}
+
+function resetMatmul() {
+  matPlaying = false;
+  clearInterval(matTimer);
+  document.getElementById('matPlayBtn').textContent = '▶ Play';
+  document.getElementById('matPlayBtn').classList.remove('playing');
+  cpuStep = 0; tpuDiag = 0; tpuStep = 0;
+
+  matA = randomMatrix(matSize);
+  matB = randomMatrix(matSize);
+
+  buildMatrixGrid('cpu-mat-a', matSize, 'cpu-a');
+  buildMatrixGrid('cpu-mat-b', matSize, 'cpu-b');
+  buildMatrixGrid('cpu-mat-c', matSize, 'cpu-c');
+  buildMatrixGrid('tpu-mat-a', matSize, 'tpu-a');
+  buildMatrixGrid('tpu-mat-b', matSize, 'tpu-b');
+  buildMatrixGrid('tpu-mat-c', matSize, 'tpu-c');
+
+  populateMatrix('cpu-mat-a', matA);
+  populateMatrix('cpu-mat-b', matB);
+  populateMatrix('tpu-mat-a', matA);
+  populateMatrix('tpu-mat-b', matB);
+
+  document.getElementById('cpu-mat-status').textContent = 'Press Play to start.';
+  document.getElementById('tpu-mat-status').textContent = 'Press Play to start.';
+  document.getElementById('cpu-ops-counter').textContent = `ops: 0 / ${matSize*matSize}`;
+  document.getElementById('tpu-ops-counter').textContent = `ops: 0 / ${matSize*matSize}`;
+}
+
+function toggleMatmul() {
+  if (matPlaying) {
+    matPlaying = false;
+    clearInterval(matTimer);
+    document.getElementById('matPlayBtn').textContent = '▶ Play';
+    document.getElementById('matPlayBtn').classList.remove('playing');
+  } else {
+    matPlaying = true;
+    document.getElementById('matPlayBtn').textContent = '⏸ Pause';
+    document.getElementById('matPlayBtn').classList.add('playing');
+    runMatmul();
+  }
+}
+
+function runMatmul() {
+  const n = matSize;
+  const totalOps = n * n;
+
+  matTimer = setInterval(() => {
+    // ── CPU: one cell at a time ──
+    if (cpuStep < totalOps) {
+      // Clear previous CPU highlight
+      if (cpuStep > 0) {
+        const pr = Math.floor((cpuStep-1)/n), pc = (cpuStep-1)%n;
+        const ca = document.getElementById(`cpu-mat-a-${pr}-${pc}`);
+        const cb = document.getElementById(`cpu-mat-b-${pr}-${pc}`);
+        const cc = document.getElementById(`cpu-mat-c-${pr}-${pc}`);
+        if (ca) ca.className = 'cell';
+        if (cb) cb.className = 'cell';
+        if (cc) cc.className = 'cell cell-done-cpu';
+      }
+
+      const r = Math.floor(cpuStep/n), c = cpuStep%n;
+      const ca = document.getElementById(`cpu-mat-a-${r}-0`);
+      const cb = document.getElementById(`cpu-mat-b-0-${c}`);
+      const cc = document.getElementById(`cpu-mat-c-${r}-${c}`);
+
+      // Compute result
+      let sum = 0;
+      for (let k = 0; k < n; k++) sum += matA[r][k] * matB[k][c];
+
+      if (ca) { ca.className = 'cell cell-active-cpu'; }
+      if (cb) { cb.className = 'cell cell-active-cpu'; }
+      if (cc) { cc.textContent = sum; cc.className = 'cell cell-active-cpu'; }
+
+      document.getElementById('cpu-mat-status').textContent =
+        `Computing C[${r}][${c}] = row ${r} × col ${c}`;
+      document.getElementById('cpu-ops-counter').textContent =
+        `ops: ${cpuStep+1} / ${totalOps}`;
+
+      cpuStep++;
+      if (cpuStep === totalOps) {
+        document.getElementById('cpu-mat-status').textContent =
+          `✓ Complete — ${totalOps} cells computed sequentially`;
+      }
+    }
+
+    // ── TPU: anti-diagonal wave — multiple cells per tick ──
+    if (tpuDiag < 2*n - 1) {
+      // Clear previous diagonal
+      if (tpuDiag > 0) {
+        for (let r = 0; r < n; r++) {
+          const c = (tpuDiag-1) - r;
+          if (c < 0 || c >= n) continue;
+          const ca = document.getElementById(`tpu-mat-a-${r}-${c}`);
+          const cb = document.getElementById(`tpu-mat-b-${r}-${c}`);
+          const cc = document.getElementById(`tpu-mat-c-${r}-${c}`);
+          if (ca) ca.className = 'cell';
+          if (cb) cb.className = 'cell';
+          if (cc) cc.className = 'cell cell-done-tpu';
+        }
+      }
+
+      let simOps = 0;
+      for (let r = 0; r < n; r++) {
+        const c = tpuDiag - r;
+        if (c < 0 || c >= n) continue;
+        simOps++;
+
+        let sum = 0;
+        for (let k = 0; k < n; k++) sum += matA[r][k] * matB[k][c];
+
+        const ca = document.getElementById(`tpu-mat-a-${r}-${c}`);
+        const cb = document.getElementById(`tpu-mat-b-${r}-${c}`);
+        const cc = document.getElementById(`tpu-mat-c-${r}-${c}`);
+        if (ca) ca.className = 'cell cell-active-tpu';
+        if (cb) cb.className = 'cell cell-active-tpu';
+        if (cc) { cc.textContent = sum; cc.className = 'cell cell-active-tpu'; }
+      }
+
+      tpuStep = Math.min(tpuStep + simOps, totalOps);
+      document.getElementById('tpu-mat-status').textContent =
+        `Wave diagonal ${tpuDiag+1} — ${simOps} PE(s) firing simultaneously`;
+      document.getElementById('tpu-ops-counter').textContent =
+        `ops: ${tpuStep} / ${totalOps}`;
+
+      tpuDiag++;
+      if (tpuDiag >= 2*n-1) {
+        document.getElementById('tpu-mat-status').textContent =
+          `✓ Complete — all ${totalOps} cells in ${2*n-1} wave steps`;
+      }
+    }
+
+    // Stop when both done
+    if (cpuStep >= totalOps && tpuDiag >= 2*n-1) {
+      clearInterval(matTimer);
+      matPlaying = false;
+      document.getElementById('matPlayBtn').textContent = '▶ Play';
+      document.getElementById('matPlayBtn').classList.remove('playing');
+    }
+  }, 500);
+}
+
+/* ═══════════════════════════════════════════
+   SECTION 3 — PARALLELISM CANVAS
+═══════════════════════════════════════════ */
+
+function initParallelCanvases() {
+  const cpuC = document.getElementById('cpuParallelCanvas');
+  const tpuC = document.getElementById('tpuParallelCanvas');
+
+  [cpuC, tpuC].forEach(cv => {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = cv.parentElement.getBoundingClientRect();
+    cv.width  = rect.width  * dpr;
+    cv.height = rect.height * dpr;
+    cv.style.width  = rect.width  + 'px';
+    cv.style.height = rect.height + 'px';
+    cv.getContext('2d').scale(dpr, dpr);
+  });
+
+  animateParallelism(cpuC, tpuC);
+}
+
+function animateParallelism(cpuC, tpuC) {
+  const cpuCtx = cpuC.getContext('2d');
+  const tpuCtx = tpuC.getContext('2d');
+  let tick = 0;
+
+  function draw() {
+    tick++;
+    const W = cpuC.width / (window.devicePixelRatio || 1);
+    const H = cpuC.height / (window.devicePixelRatio || 1);
+
+    // ── CPU ──────────────────────────────────────
+    cpuCtx.clearRect(0, 0, W, H);
+    const cpuCols = 4, cpuRows = 2;
+    const cpuPW = W / cpuCols, cpuPH = H / cpuRows;
+    let cpuActive = 0;
+
+    for (let r = 0; r < cpuRows; r++) {
+      for (let c = 0; c < cpuCols; c++) {
+        const i = r * cpuCols + c;
+        const x = cpuPW * c + cpuPW*0.15;
+        const y = cpuPH * r + cpuPH*0.12;
+        const bw = cpuPW * 0.7, bh = cpuPH * 0.75;
+
+        const active = Math.sin(tick * 0.04 + i * 1.3) > 0.3;
+        if (active) cpuActive++;
+
+        // Core body
+        cpuCtx.fillStyle = active ? '#e0f2fe' : '#f5f5f3';
+        cpuCtx.strokeStyle = active ? '#0369a1' : '#d4d4d0';
+        cpuCtx.lineWidth = active ? 1.5 : 1;
+        roundRect(cpuCtx, x, y, bw, bh, 4);
+        cpuCtx.fill();
+        cpuCtx.stroke();
+
+        // Pipeline stages inside core
+        const stages = 4;
+        const sw = (bw - 12) / stages;
+        for (let s = 0; s < stages; s++) {
+          const sx = x + 6 + s * (sw + 1);
+          const sy = y + bh * 0.55;
+          const stageActive = active && (Math.floor(tick*0.1 + i + s) % stages === s);
+          cpuCtx.fillStyle = stageActive ? '#f59e0b' : '#e5e5e0';
+          cpuCtx.fillRect(sx, sy, sw, bh * 0.28);
+        }
+
+        // Label
+        cpuCtx.fillStyle = active ? '#0369a1' : '#a8a8a0';
+        cpuCtx.font = `500 ${bh*0.2}px 'IBM Plex Mono'`;
+        cpuCtx.textAlign = 'center';
+        cpuCtx.fillText(`C${i}`, x + bw/2, y + bh * 0.38);
+
+        // Active glow
+        if (active) {
+          cpuCtx.strokeStyle = 'rgba(3,105,161,0.2)';
+          cpuCtx.lineWidth = 4;
+          roundRect(cpuCtx, x-1, y-1, bw+2, bh+2, 5);
+          cpuCtx.stroke();
+        }
+      }
+    }
+
+    document.getElementById('cpu-active-count').textContent = cpuActive;
+
+    // ── TPU ──────────────────────────────────────
+    tpuCtx.clearRect(0, 0, W, H);
+    const GRID = 8;
+    const pad = W * 0.06;
+    const gSize = Math.min(W - pad*2, H - pad*2);
+    const cell = gSize / GRID;
+    const ox = (W - gSize) / 2;
+    const oy = (H - gSize) / 2;
+    let tpuActive = 0;
+
+    // Current systolic diagonal
+    const diagIdx = Math.floor(tick * 0.15) % (GRID * 2 - 1);
+
+    for (let r = 0; r < GRID; r++) {
+      for (let c = 0; c < GRID; c++) {
+        const x  = ox + c * cell;
+        const y  = oy + r * cell;
+        const pw = cell - 3;
+
+        const diag   = r + c;
+        const active = diag === diagIdx;
+        const recent = diag === ((diagIdx-1+GRID*2)%(GRID*2));
+        if (active) tpuActive++;
+
+        tpuCtx.fillStyle = active ? '#fef3c7' : recent ? '#fff8e1' : '#f5f5f3';
+        tpuCtx.strokeStyle = active ? '#b45309' : recent ? '#f59e0b44' : '#e2e2de';
+        tpuCtx.lineWidth = active ? 1.5 : 0.8;
+        roundRect(tpuCtx, x+1, y+1, pw, pw, 2);
+        tpuCtx.fill();
+        tpuCtx.stroke();
+
+        if (active) {
+          // Flow arrows to right and bottom neighbours
+          if (c + 1 < GRID) {
+            const progress = ((tick * 0.05) % 1);
+            const px = x + pw + (progress * cell * 0.4);
+            const py = y + pw * 0.5;
+            tpuCtx.beginPath();
+            tpuCtx.arc(px, py, 2.5, 0, Math.PI*2);
+            tpuCtx.fillStyle = '#0369a1';
+            tpuCtx.fill();
+          }
+          if (r + 1 < GRID) {
+            const progress = ((tick * 0.05) % 1);
+            const px = x + pw * 0.5;
+            const py = y + pw + (progress * cell * 0.4);
+            tpuCtx.beginPath();
+            tpuCtx.arc(px, py, 2.5, 0, Math.PI*2);
+            tpuCtx.fillStyle = '#b45309';
+            tpuCtx.fill();
+          }
+
+          tpuCtx.fillStyle = '#92400e';
+          tpuCtx.font = `500 ${cell*0.28}px 'IBM Plex Mono'`;
+          tpuCtx.textAlign = 'center';
+          tpuCtx.textBaseline = 'middle';
+          tpuCtx.fillText('×+', x+pw/2+1, y+pw/2+1);
+          tpuCtx.textBaseline = 'alphabetic';
+        }
+      }
+    }
+
+    document.getElementById('tpu-active-count').textContent = tpuActive;
+
+    requestAnimationFrame(draw);
+  }
+
+  draw();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+/* ═══════════════════════════════════════════
+   SECTION 4 — DATA FLOW
+═══════════════════════════════════════════ */
+
+function initDataFlowCanvases() {
+  ['cpuFlowCanvas','tpuFlowCanvas'].forEach(id => {
+    const cv = document.getElementById(id);
+    const dpr = window.devicePixelRatio || 1;
+    const rect = cv.parentElement.getBoundingClientRect();
+    cv.width  = rect.width  * dpr;
+    cv.height = rect.height * dpr;
+    cv.style.width  = rect.width  + 'px';
+    cv.style.height = rect.height + 'px';
+    cv.getContext('2d').scale(dpr, dpr);
+  });
+
+  animateCpuFlow();
+  animateTpuFlow();
+}
+
+// CPU data flow: RAM → L3 → L2 → L1 → Core → back
+function animateCpuFlow() {
+  const cv  = document.getElementById('cpuFlowCanvas');
+  const ctx = cv.getContext('2d');
+  const packets = [];
+  let tick = 0;
+
+  const getSize = () => ({
+    W: cv.width  / (window.devicePixelRatio||1),
+    H: cv.height / (window.devicePixelRatio||1),
+  });
+
+  // Nodes: RAM, L3, L2, L1, Core
+  const nodes = (W, H) => [
+    { label:'RAM',   x: W*0.5, y: H*0.88, w:W*0.45, h:H*0.1,  col:'#e0e7ff', border:'#818cf8', text:'#4338ca' },
+    { label:'L3',    x: W*0.5, y: H*0.72, w:W*0.38, h:H*0.09, col:'#dbeafe', border:'#60a5fa', text:'#1d4ed8' },
+    { label:'L2',    x: W*0.5, y: H*0.57, w:W*0.30, h:H*0.09, col:'#cffafe', border:'#22d3ee', text:'#0e7490' },
+    { label:'L1',    x: W*0.5, y: H*0.42, w:W*0.22, h:H*0.09, col:'#d1fae5', border:'#34d399', text:'#065f46' },
+    { label:'CORE',  x: W*0.5, y: H*0.22, w:W*0.28, h:H*0.14, col:'#e0f2fe', border:'#0369a1', text:'#0c4a6e' },
+  ];
+
+  function draw() {
+    tick++;
+    const {W,H} = getSize();
+    ctx.clearRect(0,0,W,H);
+    const ns = nodes(W,H);
+
+    // Draw nodes
+    ns.forEach(n => {
+      ctx.fillStyle = n.col;
+      ctx.strokeStyle = n.border;
+      ctx.lineWidth = 1.5;
+      roundRect(ctx, n.x - n.w/2, n.y - n.h/2, n.w, n.h, 4);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = n.text;
+      ctx.font = `600 ${H*0.038}px 'IBM Plex Mono'`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(n.label, n.x, n.y);
+      ctx.textBaseline = 'alphabetic';
+    });
+
+    // Connecting lines
+    for (let i = 0; i < ns.length-1; i++) {
+      ctx.beginPath();
+      ctx.moveTo(ns[i+1].x, ns[i+1].y + ns[i+1].h/2);
+      ctx.lineTo(ns[i].x,   ns[i].y   - ns[i].h/2);
+      ctx.strokeStyle = '#d4d4d0';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4,4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Spawn packet every ~25 ticks
+    if (tick % 25 === 0) {
+      const goUp = Math.random() > 0.3;
+      const startIdx = goUp ? ns.length-1 : 0;
+      const endIdx   = goUp ? 0 : ns.length-1;
+      packets.push({
+        x: ns[startIdx].x, y: ns[startIdx].y,
+        nodeIdx: startIdx, target: endIdx,
+        step: 0, dir: goUp ? -1 : 1,
+        col: goUp ? '#0369a1' : '#b45309',
+      });
+    }
+
+    // Animate packets
+    for (let i = packets.length-1; i >= 0; i--) {
+      const p = packets[i];
+      const curr = ns[p.nodeIdx];
+      const next = ns[p.nodeIdx + p.dir];
+      if (!next) { packets.splice(i,1); continue; }
+
+      p.step += 0.04;
+      const t = Math.min(p.step, 1);
+      const px = curr.x + (next.x - curr.x) * t;
+      const py = curr.y + (next.y - curr.y) * t;
+
+      ctx.beginPath();
+      ctx.arc(px, py, 5, 0, Math.PI*2);
+      ctx.fillStyle = p.col;
+      ctx.shadowColor = p.col;
+      ctx.shadowBlur = 6;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      if (p.step >= 1) {
+        p.nodeIdx += p.dir;
+        p.step = 0;
+        if (p.nodeIdx === p.target) packets.splice(i, 1);
+      }
+    }
+
+    requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+// TPU data flow: HBM → Systolic Array (wave) → Output Buffer
+function animateTpuFlow() {
+  const cv  = document.getElementById('tpuFlowCanvas');
+  const ctx = cv.getContext('2d');
+  const packets = [];
+  let tick = 0;
+
+  const getSize = () => ({
+    W: cv.width  / (window.devicePixelRatio||1),
+    H: cv.height / (window.devicePixelRatio||1),
+  });
+
+  function draw() {
+    tick++;
+    const {W,H} = getSize();
+    ctx.clearRect(0,0,W,H);
+
+    // HBM block
+    ctx.fillStyle = '#fef3c7';
+    ctx.strokeStyle = '#b45309';
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, W*0.1, H*0.04, W*0.8, H*0.1, 4);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#92400e';
+    ctx.font = `600 ${H*0.038}px 'IBM Plex Mono'`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('HBM — High Bandwidth Memory', W*0.5, H*0.09);
+
+    // Systolic Array (4×4 grid in the middle)
+    const MINI = 4;
+    const gridW = W * 0.6, gridH = H * 0.45;
+    const gx = (W - gridW)/2, gy = H * 0.2;
+    const cell = gridW / MINI;
+    const cellH = gridH / MINI;
+    const diagWave = Math.floor(tick * 0.12) % (MINI * 2 - 1);
+
+    for (let r = 0; r < MINI; r++) {
+      for (let c = 0; c < MINI; c++) {
+        const x = gx + c*cell, y = gy + r*cellH;
+        const diag = r + c;
+        const active = diag === diagWave;
+        ctx.fillStyle = active ? '#fef3c7' : '#f5f5f3';
+        ctx.strokeStyle = active ? '#b45309' : '#d4d4d0';
+        ctx.lineWidth = active ? 1.5 : 0.8;
+        roundRect(ctx, x+2, y+2, cell-4, cellH-4, 3);
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = active ? '#92400e' : '#a8a8a0';
+        ctx.font = `${cellH*0.25}px 'IBM Plex Mono'`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('PE', x+cell/2, y+cellH/2);
+      }
+    }
+
+    // Array label
+    ctx.fillStyle = '#a8a8a0';
+    ctx.font = `500 ${H*0.032}px 'IBM Plex Mono'`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('Systolic Array', W*0.5, gy + gridH + 6);
+
+    // Output Buffer
+    ctx.fillStyle = '#d1fae5';
+    ctx.strokeStyle = '#059669';
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, W*0.15, H*0.84, W*0.7, H*0.1, 4);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#064e3b';
+    ctx.font = `600 ${H*0.038}px 'IBM Plex Mono'`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Output Buffer', W*0.5, H*0.89);
+
+    // Spawn packets from HBM downward into array
+    if (tick % 12 === 0) {
+      const c = Math.floor(Math.random() * MINI);
+      packets.push({
+        x: gx + c*cell + cell/2, y: H*0.14,
+        tx: gx + c*cell + cell/2, ty: gy,
+        p: 0, speed: 0.07, col: '#b45309', phase: 'in',
+        row: 0, col: c, cellH, MINI, gx, gy, gridH, cell
+      });
+    }
+
+    // Packets
+    for (let i = packets.length-1; i >= 0; i--) {
+      const pk = packets[i];
+      pk.p += pk.speed;
+      const t = Math.min(pk.p, 1);
+      const px = pk.x + (pk.tx - pk.x)*t;
+      const py = pk.y + (pk.ty - pk.y)*t;
+
+      ctx.beginPath();
+      ctx.arc(px, py, 4, 0, Math.PI*2);
+      ctx.fillStyle = pk.col;
+      ctx.shadowColor = pk.col;
+      ctx.shadowBlur = 5;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      if (pk.p >= 1) {
+        if (pk.phase === 'in' && pk.row < pk.MINI - 1) {
+          pk.row++;
+          pk.x = pk.tx; pk.y = pk.ty;
+          pk.tx = pk.gx + pk.col*pk.cell + pk.cell/2;
+          pk.ty = pk.gy + pk.row*pk.cellH;
+          pk.p = 0;
+        } else if (pk.phase === 'in') {
+          // Drain to output buffer
+          pk.phase = 'out';
+          pk.x = pk.tx; pk.y = pk.ty;
+          pk.tx = W*0.5; pk.ty = H*0.84;
+          pk.p = 0; pk.speed = 0.05; pk.col = '#059669';
+        } else {
+          packets.splice(i, 1);
+        }
+      }
+    }
+
+    ctx.textBaseline = 'alphabetic';
+    requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+/* ═══════════════════════════════════════════
+   SECTION 5 — PERFORMANCE CHART
+═══════════════════════════════════════════ */
+
+// Real benchmark data from your experiment
+const perfData = {
+  labels: [100, 200, 400, 800, 1200],
+  cpu:    [0.0006, 0.0026, 0.0207, 1.0238, 3.4440],
+  gpu:    [0.0027, 0.0057, 0.0109, 0.0229, 0.0395],
+  tpu:    [0.0493, 0.0517, 0.0653, 0.1182, 0.4729],
+};
+
+let perfChart = null;
+let graphType = 'time';
+
+function initPerfChart() {
+  const ctx = document.getElementById('perfChart').getContext('2d');
+
+  Chart.defaults.font.family = "'DM Sans', sans-serif";
+  Chart.defaults.font.size   = 12;
+
+  perfChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: perfData.labels,
+      datasets: [
+        {
+          label: 'CPU (NumPy)',
+          data: perfData.cpu,
+          borderColor: '#0369a1',
+          backgroundColor: 'rgba(3,105,161,0.08)',
+          pointBackgroundColor: '#0369a1',
+          pointRadius: 5,
+          pointHoverRadius: 7,
+          borderWidth: 2,
+          tension: 0.3,
+          fill: true,
+        },
+        {
+          label: 'GPU (PyTorch)',
+          data: perfData.gpu,
+          borderColor: '#6b21a8',
+          backgroundColor: 'rgba(107,33,168,0.06)',
+          pointBackgroundColor: '#6b21a8',
+          pointRadius: 5,
+          pointHoverRadius: 7,
+          borderWidth: 2,
+          tension: 0.3,
+          fill: true,
+        },
+        {
+          label: 'TPU (JAX)',
+          data: perfData.tpu,
+          borderColor: '#b45309',
+          backgroundColor: 'rgba(180,83,9,0.06)',
+          pointBackgroundColor: '#b45309',
+          pointRadius: 5,
+          pointHoverRadius: 7,
+          borderWidth: 2,
+          tension: 0.3,
+          fill: true,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1a1a18',
+          titleFont: { family:"'IBM Plex Mono'", size:11 },
+          bodyFont:  { family:"'DM Sans'", size:12 },
+          padding: 12,
+          callbacks: {
+            title: items => `N = ${items[0].label} nodes`,
+            label: item => ` ${item.dataset.label}: ${item.raw.toFixed(4)}s`
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: { display:true, text:'Graph Size (nodes)', color:'#6b6b65', font:{size:11,weight:'500'} },
+          grid: { color:'#f0f0ee' },
+          ticks: { color:'#6b6b65', font:{family:"'IBM Plex Mono'",size:10} }
+        },
+        y: {
+          title: { display:true, text:'Execution Time (seconds)', color:'#6b6b65', font:{size:11,weight:'500'} },
+          grid: { color:'#f0f0ee' },
+          ticks: { color:'#6b6b65', font:{family:"'IBM Plex Mono'",size:10} }
+        }
+      }
+    }
+  });
+}
+
+function setGraphType(type, btn) {
+  graphType = type;
+  document.querySelectorAll('.graph-selector button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  if (!perfChart) return;
+
+  if (type === 'time') {
+    perfChart.data.datasets[0].data = perfData.cpu;
+    perfChart.data.datasets[1].data = perfData.gpu;
+    perfChart.data.datasets[2].data = perfData.tpu;
+    perfChart.options.scales.y.type = 'linear';
+    perfChart.options.scales.y.title.text = 'Execution Time (seconds)';
+  } else if (type === 'speedup') {
+    perfChart.data.datasets[0].data = perfData.cpu.map(() => 1);
+    perfChart.data.datasets[1].data = perfData.cpu.map((v,i) => +(v/perfData.gpu[i]).toFixed(2));
+    perfChart.data.datasets[2].data = perfData.cpu.map((v,i) => +(v/perfData.tpu[i]).toFixed(2));
+    perfChart.options.scales.y.type = 'linear';
+    perfChart.options.scales.y.title.text = 'Speedup vs CPU (×)';
+  } else if (type === 'log') {
+    perfChart.data.datasets[0].data = perfData.cpu;
+    perfChart.data.datasets[1].data = perfData.gpu;
+    perfChart.data.datasets[2].data = perfData.tpu;
+    perfChart.options.scales.y.type = 'logarithmic';
+    perfChart.options.scales.y.title.text = 'Execution Time — log scale';
+  }
+
+  perfChart.update('active');
+}
+
+/* ═══════════════════════════════════════════
+   SECTION 6 — WORKLOAD SUITABILITY
+═══════════════════════════════════════════ */
+
+const workloads = {
+  matmul: {
+    name: 'Matrix Multiplication',
+    winner: 'tpu',
+    winnerLabel: '🏆 TPU wins',
+    scores: { CPU: 20, GPU: 65, TPU: 95 },
+    why: 'Matrix multiply is exactly what TPUs were built for. The systolic array performs N² multiply-accumulate operations simultaneously. A 128×128 MXU processes an entire matrix tile per clock pulse. CPUs must loop over all cells sequentially — ~1000× slower for large matrices.',
+  },
+  neural: {
+    name: 'Neural Network Inference',
+    winner: 'tpu',
+    winnerLabel: '🏆 TPU wins',
+    scores: { CPU: 15, GPU: 70, TPU: 100 },
+    why: 'Neural networks are chains of matrix multiplications. The TPU excels because every layer (dense, attention, convolution) maps directly to matmul. XLA fuses all operations into a single compiled kernel with zero Python overhead between layers.',
+  },
+  graph: {
+    name: 'Graph Algorithms (Floyd-Warshall)',
+    winner: 'gpu',
+    winnerLabel: '🥈 GPU wins — TPU close',
+    scores: { CPU: 30, GPU: 90, TPU: 72 },
+    why: 'Graph algorithms like Floyd-Warshall involve irregular memory access and sequential dependency between iterations. GPUs handle this well with many CUDA cores. TPUs underperform because their systolic array is optimised for dense GEMM — sparse graph data leaves PEs idle.',
+  },
+  branch: {
+    name: 'Branch-Heavy Programs',
+    winner: 'cpu',
+    winnerLabel: '🏆 CPU wins',
+    scores: { CPU: 95, GPU: 25, TPU: 5 },
+    why: 'Branching is the CPU\'s home ground. Out-of-order execution and branch prediction are designed precisely for this. GPUs lose because thousands of SIMD threads must take the same branch — divergent paths stall. TPUs cannot execute branches at all — all logic must be pre-compiled into static graphs.',
+  },
+  sort: {
+    name: 'Sorting Algorithms',
+    winner: 'cpu',
+    winnerLabel: '🏆 CPU wins',
+    scores: { CPU: 85, GPU: 45, TPU: 10 },
+    why: 'Sorting involves comparisons, swaps, and heavy branch logic — all CPU strengths. GPUs can use parallel bitonic sort but memory bandwidth limits performance. TPUs have no native sort primitive and cannot handle the dynamic comparisons sorting requires.',
+  },
+  conv: {
+    name: 'Convolution (CNN)',
+    winner: 'tpu',
+    winnerLabel: '🏆 TPU wins',
+    scores: { CPU: 20, GPU: 75, TPU: 98 },
+    why: 'Convolution is equivalent to matrix multiply when unrolled via im2col. TPUs treat CNN layers as GEMM operations and execute them on the systolic MXU at peak efficiency. XLA\'s fusion optimiser eliminates all intermediate memory writes between conv → BN → ReLU layers.',
+  },
+};
+
+function setWorkload(id, btn) {
+  document.querySelectorAll('.workload-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderWorkload(id);
+}
+
+function renderWorkload(id) {
+  const wl = workloads[id];
+  const result = document.getElementById('workload-result');
+
+  const winClass = wl.winner === 'tpu' ? 'winner-tpu' : wl.winner === 'gpu' ? 'winner-both' : 'winner-cpu';
+
+  const bars = Object.entries(wl.scores).map(([arch, score]) => {
+    const col  = arch === 'CPU' ? '#0369a1' : arch === 'GPU' ? '#6b21a8' : '#b45309';
+    const bg   = arch === 'CPU' ? '#e0f2fe' : arch === 'GPU' ? '#ede9fe' : '#fef3c7';
+    const text = arch === 'CPU' ? '#0c4a6e' : arch === 'GPU' ? '#3b0764' : '#78350f';
+    return `
+      <div class="perf-bar-row">
+        <span class="perf-bar-label" style="color:${col}">${arch}</span>
+        <div class="perf-bar-track">
+          <div class="perf-bar-fill" style="width:${score}%;background:${col}">
+            ${score > 20 ? arch : ''}
+          </div>
+        </div>
+        <span class="perf-bar-score">${score}/100</span>
+      </div>`;
+  }).join('');
+
+  result.innerHTML = `
+    <div class="workload-result-title">${wl.name}</div>
+    <span class="winner-badge ${winClass}">${wl.winnerLabel}</span>
+    <div class="perf-bars">${bars}</div>
+    <div class="workload-explanation">
+      <h4>Why?</h4>
+      <p>${wl.why}</p>
+    </div>
+  `;
+
+  result.classList.remove('fade-in');
+  void result.offsetWidth; // force reflow
+  result.classList.add('fade-in');
+}
+
+/* ═══════════════════════════════════════════
+   INIT
+═══════════════════════════════════════════ */
+window.addEventListener('DOMContentLoaded', () => {
+  buildCpuVisual();
+  animateCpuCores();
+  buildTpuGrid();
+  animateTpuWave();
+
+  resetMatmul();
+
+  // Init Floyd-Warshall section
+  fwAdj = fwCopy(FW_DEFAULTS[4]);
+  fwBuild();
+
+  // Wait for layout then init canvases
+  setTimeout(() => {
+    initParallelCanvases();
+    initDataFlowCanvases();
+    initPerfChart();
+    renderWorkload('matmul');
+  }, 100);
+});
+
+window.addEventListener('resize', () => {
+  // Re-init canvases on resize
+  setTimeout(() => {
+    initParallelCanvases();
+    initDataFlowCanvases();
+  }, 100);
+});
+</script>
+</body>
+</html>
